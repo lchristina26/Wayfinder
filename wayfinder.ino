@@ -2,13 +2,14 @@
 #include <SoftwareSerial.h>
 
 /*
- * Message Syntax:
- *  INIT        ===> 999, 1, [<clientAddress>]
- *  COMFIRM     ===> <NodeAddress>, 2, [<clientAddress>, <destination>]
- *  CANIDATE    ===> <clientAddress>, 3, [<nodeAddress>]
- *  NAVIGATION  ===> <clientAddress>, 9, [<direction>, <distance>]
- *  
- */
+   Message Syntax:
+    INIT        ===> 999, 1, [<clientAddress>]
+    COMFIRM     ===> <NodeAddress>, 2, [<clientAddress>, <destination>]
+    CANIDATE    ===> <clientAddress>, 3, [<nodeAddress>]
+    NAVIGATION  ===> <clientAddress>, 9, [<direction>, <distance>]
+    OFFCOURSE   ===> <clientAddress>, 4
+
+*/
 
 #define myAddr  101  // Address of this node
 #define rxPin   4  // Serial input (connects to Emic 2's SOUT pin)
@@ -21,9 +22,12 @@
 // set up a new serial port
 SoftwareSerial emicSerial =  SoftwareSerial(rxPin, txPin);
 
-String message, args, error;     // Last received message
+String message, args, error;
 int command;
-int myClient, myClientOrigin, myClientDest, lastVelocity;
+int myClient, myClientOrigin, myClientDest, lastVelocity, offCourseCounter, timeSinceInst;
+boolean send20 = false;
+boolean send10 = false;
+boolean send5 = false;
 
 typedef struct {
   String direction;
@@ -36,7 +40,7 @@ void setup()  // Set up code called once on start-up
   pinMode(ledPin, OUTPUT);
   pinMode(rxPin, INPUT);
   pinMode(txPin, OUTPUT);
-  
+
   // set the data rate for the SoftwareSerial port
   emicSerial.begin(9600);
 
@@ -97,31 +101,31 @@ void handleSent() {
 
 // Receive error interrupt for DWM1000
 void onMsgFailure () {
-   Serial.println("DWM1000 message receive error!!");
-   error = false;
-   DW1000.getData(error);
-   Serial.print("Error data is ... "); Serial.println(message);
+  Serial.println("DWM1000 message receive error!!");
+  error = false;
+  DW1000.getData(error);
+  Serial.print("Error data is ... "); Serial.println(message);
 }
 
 // Error interrupt forDW1000
 void onDW1000Error () {
-   Serial.println("DWM1000 error!!");
-   error = false;
-   DW1000.getData(error);
-   Serial.print("Error data is ... "); Serial.println(message);
+  Serial.println("DWM1000 error!!");
+  error = false;
+  DW1000.getData(error);
+  Serial.print("Error data is ... "); Serial.println(message);
 }
 
 // IRQ handler for DWM1000
 void didReceiveUWBMessage() {
-      // get data as string
-      DW1000.getData(message);
-      parseCommand();
-      Serial.print("Data is ... "); Serial.println(message);
-      Serial.print("FP power is [dBm] ... "); Serial.println(DW1000.getFirstPathPower());
-      Serial.print("RX power is [dBm] ... "); Serial.println(DW1000.getReceivePower());
-      Serial.print("Signal quality is ... "); Serial.println(DW1000.getReceiveQuality());
-      message = "";
-    }
+  // get data as string
+  DW1000.getData(message);
+  parseCommand();
+  Serial.print("Data is ... "); Serial.println(message);
+  Serial.print("FP power is [dBm] ... "); Serial.println(DW1000.getFirstPathPower());
+  Serial.print("RX power is [dBm] ... "); Serial.println(DW1000.getReceivePower());
+  Serial.print("Signal quality is ... "); Serial.println(DW1000.getReceiveQuality());
+  message = "";
+}
 }
 
 void parseCommand () {
@@ -129,7 +133,7 @@ void parseCommand () {
     Serial.println("Received empty messgae");
     return;
   }
-  
+
   // Parse
   addrEnd = message.indexOf(":");
   if (message.substring(0, addrEnd) != myAddr) return;
@@ -156,12 +160,13 @@ void parseCommand () {
       args.remove(0, _pos);
       myClientDest = args;
       myClient = _addr;
-      Serial.println("***Command: confirmation. From client: " + myClient); 
+      Serial.println("***Command: confirmation. From client: " + myClient);
       // Send first direction message!
       NavInstruction _inst = getNavigationInstruction(myClientDestination, myClientOrigin);
-      sendCommand(myClient, _inst);
-      }
+      sendCommand(myClient, 9, _inst.direction + "," + _inst.distance);
+      timeSinceInst = millis();
   }
+}
 }
 
 void onUWBError () {
@@ -198,6 +203,35 @@ void receiver() {
   DW1000.startReceive();
 }
 
+void transmitPollAck() {
+    DW1000.newTransmit();
+    DW1000.setDefaults();
+    data[0] = POLL_ACK;
+    // delay the same amount as ranging tag
+    DW1000Time deltaTime = DW1000Time(replyDelayTimeUS, DW_MICROSECONDS);
+    DW1000.setDelay(deltaTime);
+    DW1000.setData(data, LEN_DATA);
+    DW1000.startTransmit();
+}
+
+void transmitRangeReport(float curRange) {
+    DW1000.newTransmit();
+    DW1000.setDefaults();
+    data[0] = RANGE_REPORT;
+    // write final ranging result
+    memcpy(data+1, &curRange, 4);
+    DW1000.setData(data, LEN_DATA);
+    DW1000.startTransmit();
+}
+
+void transmitRangeFailed() {
+    DW1000.newTransmit();
+    DW1000.setDefaults();
+    data[0] = RANGE_FAILED;
+    DW1000.setData(data, LEN_DATA);
+    DW1000.startTransmit();
+}
+
 int getDistanceToClient () {
   int _dist;
   return _dist;
@@ -211,10 +245,27 @@ int getRelativeVelocity () {
 void loop()  // Main code, to run repeatedly
 {
   // Client monitoring
-  _dist = getDistanceToClient();
-  _velocity = getRelativeVelocity();
-  if (
-}
+  if (myClient > 0) {
+    _dist = getDistanceToClient();
+    _velocity = getRelativeVelocity();
+    if (_velocity - lastVelocity < 0) {
+      // Client is now moving AWAY from node
+      if (++offCourseCount > 5) {
+        // Send OFF COURSE command to client
+        sendCommand(myClient, 4, "");
+      }
+    } else {
+      offCourseCount = 0;
+    }
+
+    // See if we need to send an update message
+    if ((_dist <= 20 && !send20) || (_dist <= 10 && !send10) || (_dist <= 5 && !send5) || millis() - timeSinceInst > 10000) {
+      NavInstruction _inst = getNavigationInstruction(myClientDestination, myClientOrigin);
+      sendCommand(myClient, 9, _inst.direction + "," + _inst.distance);
+      timeSinceInst = millis();
+    }
+    delay(1000);
+  }
 
 
 
