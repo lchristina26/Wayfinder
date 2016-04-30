@@ -1,4 +1,6 @@
 #include <DW1000.h>
+#include "DW1000Ranging.h"
+##include "DW1000Device.h"
 #include <SoftwareSerial.h>
 
 /*
@@ -247,8 +249,13 @@ void transmitRangeFailed() {
 }
 
 int getDistanceToClient () {
-  int _dist;
-  return _dist;
+  DW1000Time myTOF;
+  DW1000Device *distantDevice = 
+      searchDistantDevice(_lastSentToShortAddress); // need to get addr
+
+  DW100Ranging.computeRangeAsymmetric(distantDevice, &myTOF);
+  float distance=myTOF.getAsMeters();
+  return (int)distance;
 }
 
 int getRelativeVelocity () {
