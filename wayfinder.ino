@@ -34,6 +34,11 @@ typedef struct {
   int distance;
 } NavInstruction;
 
+// matrix of directions
+char dirs[3][3] = {('0', 'l', 'l'), ('r', '0', 'r'), ('l', 'l', '0')}; 
+// matrix of distances between nodes
+char dists[3][3] = {(0, 10, 30), (10, 0, 20), (30, 20, 0)};
+
 void setup()  // Set up code called once on start-up
 {
   // define pin modes
@@ -192,7 +197,16 @@ void sendCommand(int addr, NavInstruction inst) {
 }
 
 NavInstruction getNavigationInstruction (int destination, int origin) {
+  char dir;
+  NavInstruction n_i;
+  if (dirs[origin][dest] == 'l') { //
+    n_i.direction = 'L'; // command to go left
+  } else {
+    n_i.direction = 'R'; // command to go right
+  }
+  n_i.distance = dists[origin][dest];
 
+  return n_i;
 }
 
 void receiver() {
